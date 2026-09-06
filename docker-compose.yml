@@ -1,10 +1,10 @@
-# Nimly Transcoder — 1 servicio, enganchado a la red externa de Supabase.
+# Nimly Transcoder — transcoder + su propio cloudflared, en la red de Supabase.
 #
 # Antes de `up`:
-#   1) Corre sql/001_hls.sql contra tu Postgres de Supabase.
-#   2) Copia .env.example a .env y llénalo (para el SERVER: SUPABASE_URL=http://kong:8000,
-#      DATABASE_URL=postgres://postgres:PASS@db:5432/postgres,
-#      PUBLIC_SUPABASE_URL=https://supabase.<dominio>).
+#   1) Corre sql/001_hls.sql contra Postgres (psql -U supabase_admin).
+#   2) Copia .env.example a .env y llénalo (SERVER: SUPABASE_URL=http://kong:8000,
+#      DATABASE_URL=postgres://supabase_admin:PASS@db:5432/postgres,
+#      PUBLIC_SUPABASE_URL=https://supabase.<dominio>, CLOUDFLARE_TUNNEL_TOKEN=...).
 #   3) Confirma el nombre real de la red:  docker network ls | grep supabase
 #      y ponlo en .env como SUPABASE_NETWORK=...
 
@@ -14,9 +14,8 @@ services:
     container_name: nimly-transcoder
     restart: unless-stopped
     env_file: .env
-    # Publica la API solo en loopback del host (por si cloudflared corre en el host).
-    # Si cloudflared está en la MISMA red docker, no necesitas esto: te alcanza
-    # por el nombre de servicio `transcoder:8787`.
+    # API publicada solo en loopback del host (para curl de prueba desde el server).
+    # El tunnel NO usa esto: llega por la red docker como `transcoder:8787`.
     ports:
       - "127.0.0.1:${MEDIA_API_PORT:-8787}:${MEDIA_API_PORT:-8787}"
     tmpfs:
@@ -30,6 +29,34 @@ services:
       supabase:
         aliases:
           - transcoder
+
+  # cloudflared dedicado para este stack.
+  #
+  # CLOUDFLARE_TUNNEL_TOKEN puede ser:
+  #   (a) el MISMO token del cloudflared del stack de Supabase -> este contenedor
+  #       es una réplica HA del mismo tunnel; agregás el public hostname
+  #       `media.<dominio> -> http://transcoder:8787` en el dashboard Zero Trust.
+  #   (b) un tunnel NUEVO creado en el dashboard -> configurás ahí su hostname.
+  #
+  # Si preferís no correr un 2º cloudflared, borrá este servicio: el cloudflared
+  # de Supabase ya alcanza `transcoder:8787` (misma red) una vez que el
+  # contenedor está arriba.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: nimly-transcoder-cloudflared
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      - transcoder
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - supabase
 
 networks:
   supabase:

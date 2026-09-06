@@ -69,8 +69,12 @@ Desde `~/projects/supabase/docker` (el puerto 5432 del host lo tiene el pooler,
 así que lo más simple es entrar al contenedor `db`):
 
 ```bash
-docker compose exec -T db psql -U postgres -d postgres < /ruta/a/Transcoder/sql/001_hls.sql
+docker exec -i supabase-db psql -U supabase_admin -d postgres < /ruta/a/Transcoder/sql/001_hls.sql
 ```
+
+> Se corre como `supabase_admin` (superuser real). El rol `postgres` en este
+> Supabase perdió superuser y no es dueño de `posts` → `ERROR: must be owner of
+> table posts`.
 
 Crea `transcode_jobs`, agrega `hls_path` / `playback_status` a `posts` (y
 `stories`), crea el bucket privado `media-hls`, los triggers de encolado/limpieza,
@@ -83,7 +87,7 @@ El `.env` de este repo **ya está armado para este server** (valores tomados de
 `~/projects/supabase/docker/.env`). Si lo tenés que rehacer:
 
 ```ini
-DATABASE_URL=postgres://postgres:<POSTGRES_PASSWORD>@db:5432/postgres
+DATABASE_URL=postgres://supabase_admin:<POSTGRES_PASSWORD>@db:5432/postgres
 SUPABASE_URL=http://kong:8000
 PUBLIC_SUPABASE_URL=https://supabase.platosmart.com
 SERVICE_ROLE_KEY=<SERVICE_ROLE_KEY del .env de Supabase>
@@ -123,27 +127,31 @@ Deberías ver `worker.start`, `listen.ready`, `api.listening`.
 
 ### 3.5 Agregar la ruta en el Cloudflare Tunnel
 
-Tu `cloudflared` corre como contenedor (`cloudflared`) en la red de Supabase con
-**token** (`tunnel run`, sin `config.yml`) → las rutas se manejan en el
-**dashboard de Cloudflare Zero Trust**:
+El `docker-compose.yml` ya levanta un `cloudflared` (`nimly-transcoder-cloudflared`)
+con `CLOUDFLARE_TUNNEL_TOKEN`. Con el token puesto al mismo tunnel de Supabase,
+este contenedor es una **réplica** de ese tunnel. Solo falta declararle el
+hostname en el **dashboard de Cloudflare Zero Trust**:
 
-*Networks → Tunnels → (tu tunnel) → Public Hostname → Add a public hostname*
+*Networks → Tunnels → (tu tunnel) → Configure → Public Hostname → Add a public hostname*
 
 | Campo | Valor |
 |---|---|
 | Subdomain | `media` |
 | Domain | `platosmart.com` |
 | Path | *(vacío)* |
-| Type | `HTTP` |
-| URL | `transcoder:8787` |
+| Service · Type | `HTTP` |
+| Service · URL | `transcoder:8787` |
 
-`transcoder` resuelve porque el contenedor está en la misma red docker
-(`supabase_default`) que `cloudflared`. El DNS de `media.platosmart.com` lo crea
-Cloudflare solo al guardar el public hostname.
+`transcoder` resuelve porque `cloudflared` y `transcoder` están en la misma red
+docker (`supabase_default`). El DNS de `media.platosmart.com` lo crea Cloudflare
+al guardar. No hay que reiniciar nada.
 
-> Si algún día pasas `cloudflared` a `config.yml`, el `ingress` equivalente es
-> `- hostname: media.platosmart.com` / `service: http://transcoder:8787` antes de
-> la regla `http_status:404`.
+> **Alternativa:** si no querés un 2º `cloudflared`, borrá ese servicio del
+> compose — el `cloudflared` del stack de Supabase ya alcanza `transcoder:8787`
+> por la misma red una vez que el contenedor está arriba.
+>
+> Con `config.yml` en vez de token, el `ingress` es
+> `- hostname: media.platosmart.com` / `service: http://transcoder:8787`.
 
 ### 3.6 Prueba manual
 
@@ -165,14 +173,14 @@ normalmente **no** está expuesto fuera del server. Elegí una:
   ```bash
   ssh -N -L 5432:localhost:5432 usuario@tu-server
   ```
-  y en `.env`: `DATABASE_URL=postgres://postgres:TU_PASS@127.0.0.1:5432/postgres`
+  y en `.env`: `DATABASE_URL=postgres://supabase_admin:TU_PASS@127.0.0.1:5432/postgres`
 - Exponer temporalmente el 5432 del contenedor `db` de Supabase.
 - Correr un Supabase local y probar contra ese.
 
 ### 4.2 `.env` para Mac
 
 ```ini
-DATABASE_URL=postgres://postgres:TU_PASS@127.0.0.1:5432/postgres
+DATABASE_URL=postgres://supabase_admin:TU_PASS@127.0.0.1:5432/postgres
 SUPABASE_URL=https://supabase.platosmart.com
 # PUBLIC_SUPABASE_URL vacío -> usa SUPABASE_URL
 SERVICE_ROLE_KEY=...
@@ -230,7 +238,7 @@ const source =
 ### 6.1 Encolar un job para un post que ya existe
 
 ```bash
-export DATABASE_URL='postgres://postgres:TU_PASS@127.0.0.1:5432/postgres'
+export DATABASE_URL='postgres://supabase_admin:TU_PASS@127.0.0.1:5432/postgres'
 npm run enqueue-test -- <POST_ID>
 ```
 
