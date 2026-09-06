@@ -1,0 +1,36 @@
+# Nimly Transcoder — 1 servicio, enganchado a la red externa de Supabase.
+#
+# Antes de `up`:
+#   1) Corre sql/001_hls.sql contra tu Postgres de Supabase.
+#   2) Copia .env.example a .env y llénalo (para el SERVER: SUPABASE_URL=http://kong:8000,
+#      DATABASE_URL=postgres://postgres:PASS@db:5432/postgres,
+#      PUBLIC_SUPABASE_URL=https://supabase.<dominio>).
+#   3) Confirma el nombre real de la red:  docker network ls | grep supabase
+#      y ponlo en .env como SUPABASE_NETWORK=...
+
+services:
+  transcoder:
+    build: .
+    container_name: nimly-transcoder
+    restart: unless-stopped
+    env_file: .env
+    # Publica la API solo en loopback del host (por si cloudflared corre en el host).
+    # Si cloudflared está en la MISMA red docker, no necesitas esto: te alcanza
+    # por el nombre de servicio `transcoder:8787`.
+    ports:
+      - "127.0.0.1:${MEDIA_API_PORT:-8787}:${MEDIA_API_PORT:-8787}"
+    tmpfs:
+      - /tmp/work
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    networks:
+      - supabase
+
+networks:
+  supabase:
+    external: true
+    # Nombre real de la red docker de Supabase (docker network ls | grep supabase).
+    name: ${SUPABASE_NETWORK:-supabase_default}
