@@ -1,8 +1,8 @@
 // Media API (Fastify). Entrega el playlist HLS autenticado.
 //
 //   GET /health
-//   GET /media/:userId/:postId/index.m3u8   -> playlist con signed URLs
-//   GET /media/:userId/:postId/:segment     -> solo si SEGMENT_PROXY=true
+//   GET /media/:userId/:mediaId/index.m3u8   -> playlist con signed URLs (post o story)
+//   GET /media/:userId/:mediaId/:segment     -> solo si SEGMENT_PROXY=true
 
 import { Readable } from 'node:stream';
 import Fastify from 'fastify';
@@ -10,7 +10,7 @@ import { config } from '../config.ts';
 import { pool } from '../db.ts';
 import { verifyUser } from '../jwt.ts';
 import { log } from '../logger.ts';
-import { checkPostAccess } from './permissions.ts';
+import { checkMediaAccess } from './permissions.ts';
 import { downloadText, fetchObject, signUrls } from '../storage.ts';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -22,43 +22,44 @@ app.get('/health', async () => ({ status: 'ok' }));
 
 interface MediaParams {
   userId: string;
-  postId: string;
+  mediaId: string;
 }
 
-app.get<{ Params: MediaParams }>('/media/:userId/:postId/index.m3u8', async (req, reply) => {
+app.get<{ Params: MediaParams }>('/media/:userId/:mediaId/index.m3u8', async (req, reply) => {
   const t0 = Date.now();
-  const { userId, postId } = req.params;
+  const { userId, mediaId } = req.params;
 
-  if (!UUID_RE.test(userId) || !UUID_RE.test(postId)) {
+  if (!UUID_RE.test(userId) || !UUID_RE.test(mediaId)) {
     return reply.code(400).send({ error: 'bad_request' });
   }
 
   const user = await verifyUser(req.headers.authorization);
   if (!user) {
-    log.info('playlist.unauthorized', { postId, ms: Date.now() - t0 });
+    log.info('playlist.unauthorized', { mediaId, ms: Date.now() - t0 });
     return reply.code(401).send({ error: 'unauthorized' });
   }
 
-  const access = await checkPostAccess(pool, postId, user.sub);
+  const access = await checkMediaAccess(pool, mediaId, user.sub);
   if (!access.allowed) {
-    log.info('playlist.forbidden', { uid: user.sub, postId, ms: Date.now() - t0 });
+    log.info('playlist.forbidden', { uid: user.sub, mediaId, ms: Date.now() - t0 });
     return reply.code(403).send({ error: 'forbidden' });
   }
   const owner = access.owner ?? userId;
 
-  const playlist = await downloadText(config.hlsBucket, `${owner}/${postId}/index.m3u8`);
+  const playlist = await downloadText(config.hlsBucket, `${owner}/${mediaId}/index.m3u8`);
   if (playlist == null) {
-    log.info('playlist.not_found', { uid: user.sub, postId, ms: Date.now() - t0 });
+    log.info('playlist.not_found', { uid: user.sub, mediaId, kind: access.kind, ms: Date.now() - t0 });
     return reply.code(404).send({ error: 'not_found' });
   }
 
   // Con SEGMENT_PROXY los segmentos quedan relativos y los resuelve el cliente
   // contra la URL del playlist (-> caen en la ruta :segment de abajo).
-  const body = config.segmentProxy ? playlist : await rewritePlaylist(playlist, owner, postId);
+  const body = config.segmentProxy ? playlist : await rewritePlaylist(playlist, owner, mediaId);
 
   log.info('playlist.ok', {
     uid: user.sub,
-    postId,
+    mediaId,
+    kind: access.kind,
     proxy: config.segmentProxy,
     ms: Date.now() - t0,
   });
@@ -69,7 +70,7 @@ app.get<{ Params: MediaParams }>('/media/:userId/:postId/index.m3u8', async (req
     .send(body);
 });
 
-async function rewritePlaylist(text: string, owner: string, postId: string): Promise<string> {
+async function rewritePlaylist(text: string, owner: string, mediaId: string): Promise<string> {
   const lines = text.split('\n');
   const idx: number[] = [];
   for (let i = 0; i < lines.length; i++) {
@@ -78,7 +79,7 @@ async function rewritePlaylist(text: string, owner: string, postId: string): Pro
   }
   if (idx.length === 0) return text;
 
-  const paths = idx.map((i) => `${owner}/${postId}/${lines[i]!.trim()}`);
+  const paths = idx.map((i) => `${owner}/${mediaId}/${lines[i]!.trim()}`);
   const signed = await signUrls(config.hlsBucket, paths, config.signedUrlTtl);
 
   for (let k = 0; k < idx.length; k++) {
@@ -95,16 +96,16 @@ interface SegmentParams extends MediaParams {
 }
 
 if (config.segmentProxy) {
-  app.get<{ Params: SegmentParams }>('/media/:userId/:postId/:segment', async (req, reply) => {
-    const { userId, postId, segment } = req.params;
-    if (!UUID_RE.test(userId) || !UUID_RE.test(postId) || !SEGMENT_RE.test(segment)) {
+  app.get<{ Params: SegmentParams }>('/media/:userId/:mediaId/:segment', async (req, reply) => {
+    const { userId, mediaId, segment } = req.params;
+    if (!UUID_RE.test(userId) || !UUID_RE.test(mediaId) || !SEGMENT_RE.test(segment)) {
       return reply.code(400).send({ error: 'bad_request' });
     }
     // Solo firma + exp del JWT (sin BD).
     const user = await verifyUser(req.headers.authorization);
     if (!user) return reply.code(401).send({ error: 'unauthorized' });
 
-    const upstream = await fetchObject(config.hlsBucket, `${userId}/${postId}/${segment}`);
+    const upstream = await fetchObject(config.hlsBucket, `${userId}/${mediaId}/${segment}`);
     if (upstream.status === 404) return reply.code(404).send({ error: 'not_found' });
     if (!upstream.ok || !upstream.body) return reply.code(502).send({ error: 'upstream' });
 
@@ -116,7 +117,7 @@ if (config.segmentProxy) {
     return reply.send(Readable.fromWeb(upstream.body as never));
   });
 } else {
-  app.get('/media/:userId/:postId/:segment', async (_req, reply) =>
+  app.get('/media/:userId/:mediaId/:segment', async (_req, reply) =>
     reply.code(404).send({ error: 'not_found' }),
   );
 }

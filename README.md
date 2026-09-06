@@ -34,7 +34,11 @@ Un contenedor, dos procesos, enganchado a la red docker de Supabase.
 ├── Dockerfile                 # node:20-slim + ffmpeg (Debian: libx264 + libzimg)
 ├── .env.example               # copiar a .env
 ├── sql/
-│   └── 001_hls.sql            # migración idempotente
+│   ├── 001_hls.sql            # migración idempotente (posts)
+│   └── 002_stories.sql        # activa stories (opcional)
+├── docs/
+│   ├── CLIENT_INTEGRATION.md  # handoff para el repo de la app
+│   └── FRONT_PROMPT.md        # prompt paste-ready para el front
 ├── scripts/
 │   └── enqueue-test.ts        # encola un job para un post existente
 └── src/
@@ -391,8 +395,21 @@ El worker procesa **1 job a la vez**. Siempre limpia `WORK_DIR/<jobId>/`.
 
 ## 10. Stories
 
-La migración ya deja `hls_path` / `playback_status` en `stories` y los triggers
-**comentados** en `sql/001_hls.sql` (sección 6b). Para activarlos: descomentar esa
-sección, correr la migración de nuevo, y listo — el worker ya maneja
-`kind='story'` (usa la tabla `stories` para el `UPDATE` y el mismo bucket
-`media-hls`).
+Se activan con `sql/002_stories.sql`:
+
+```bash
+docker exec -i supabase-db psql -U supabase_admin -d postgres < sql/002_stories.sql
+```
+
+Qué hace:
+- Trigger `AFTER INSERT ON stories` → encola transcode si `media_type='video'` y
+  el path es de video. `source_bucket='stories'`.
+- Trigger `AFTER DELETE ON stories` → encola `cleanup` (cubre el borrado
+  automático a las 24h).
+
+La Media API sirve stories por la **misma ruta** (`/media/:userId/:mediaId/index.m3u8`):
+prueba `posts` primero y si no matchea, `stories`. Permiso de story = espeja la
+RLS policy: **dueño, o `are_friends()` Y `created_at >= now() - 24h`**.
+
+El worker ya maneja `kind='story'` (UPDATE a `stories`, mismo bucket de salida
+`media-hls`, path `{user_id}/{story_id}/`).
