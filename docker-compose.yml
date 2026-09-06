@@ -27,7 +27,9 @@ services:
         max-size: "10m"
         max-file: "5"
     networks:
-      - supabase
+      supabase:
+        aliases:
+          - transcoder
 
 networks:
   supabase:

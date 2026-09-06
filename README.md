@@ -65,11 +65,12 @@ Un contenedor, dos procesos, enganchado a la red docker de Supabase.
 
 ### 3.1 Correr la migración
 
-```bash
-psql "postgres://postgres:TU_PASS@localhost:5432/postgres" -f sql/001_hls.sql
-```
+Desde `~/projects/supabase/docker` (el puerto 5432 del host lo tiene el pooler,
+así que lo más simple es entrar al contenedor `db`):
 
-(o desde dentro del contenedor `db` de Supabase: `docker compose exec -T db psql -U postgres -d postgres < sql/001_hls.sql`)
+```bash
+docker compose exec -T db psql -U postgres -d postgres < /ruta/a/Transcoder/sql/001_hls.sql
+```
 
 Crea `transcode_jobs`, agrega `hls_path` / `playback_status` a `posts` (y
 `stories`), crea el bucket privado `media-hls`, los triggers de encolado/limpieza,
@@ -78,19 +79,20 @@ se puede correr de nuevo sin romper nada.
 
 ### 3.2 Llenar `.env`
 
-```bash
-cp .env.example .env
-```
-
-Para el **server** (todo interno, nada por Cloudflare):
+El `.env` de este repo **ya está armado para este server** (valores tomados de
+`~/projects/supabase/docker/.env`). Si lo tenés que rehacer:
 
 ```ini
-DATABASE_URL=postgres://postgres:TU_PASS@db:5432/postgres
+DATABASE_URL=postgres://postgres:<POSTGRES_PASSWORD>@db:5432/postgres
 SUPABASE_URL=http://kong:8000
-PUBLIC_SUPABASE_URL=https://supabase.<dominio>
-SERVICE_ROLE_KEY=<service_role key del .env de Supabase>
-SUPABASE_JWT_SECRET=<JWT secret del .env de Supabase>
+PUBLIC_SUPABASE_URL=https://supabase.platosmart.com
+SERVICE_ROLE_KEY=<SERVICE_ROLE_KEY del .env de Supabase>
+SUPABASE_JWT_SECRET=<JWT_SECRET del .env de Supabase>
+SUPABASE_NETWORK=supabase_default
 ```
+
+> ⚠️ **Nunca** pongas secretos reales en `.env.example` (ese sí va a git). Van
+> solo en `.env`, que está en `.gitignore`.
 
 > `SUPABASE_URL` es la URL **interna** que usan worker + API para hablar con
 > Storage. `PUBLIC_SUPABASE_URL` es la URL **pública** y **solo** se usa para armar
@@ -121,39 +123,27 @@ Deberías ver `worker.start`, `listen.ready`, `api.listening`.
 
 ### 3.5 Agregar la ruta en el Cloudflare Tunnel
 
-Queremos `media.<dominio>` → `http://transcoder:8787`.
+Tu `cloudflared` corre como contenedor (`cloudflared`) en la red de Supabase con
+**token** (`tunnel run`, sin `config.yml`) → las rutas se manejan en el
+**dashboard de Cloudflare Zero Trust**:
 
-**Opción A — `cloudflared` con `config.yml`** (cloudflared corre por
-docker-compose o systemd). Agrega un `ingress` **antes** de la regla
-`service: http_status:404`:
-
-```yaml
-ingress:
-  - hostname: media.<dominio>
-    service: http://transcoder:8787
-  # ... tus reglas existentes (supabase.<dominio>, etc) ...
-  - service: http_status:404
-```
-
-- Si `cloudflared` está en la **misma red docker** que `transcoder`, `http://transcoder:8787` funciona tal cual.
-- Si `cloudflared` corre en el **host**, usa `http://127.0.0.1:8787` (el compose ya publica ese puerto en loopback).
-
-Después:
-
-```bash
-cloudflared tunnel route dns <TUNNEL> media.<dominio>   # si no existe el DNS
-# reiniciá cloudflared para recargar el config
-```
-
-**Opción B — Dashboard de Cloudflare Zero Trust**
-(Networks → Tunnels → tu tunnel → *Public Hostname* → *Add a public hostname*):
+*Networks → Tunnels → (tu tunnel) → Public Hostname → Add a public hostname*
 
 | Campo | Valor |
 |---|---|
 | Subdomain | `media` |
-| Domain | `<dominio>` |
+| Domain | `platosmart.com` |
+| Path | *(vacío)* |
 | Type | `HTTP` |
-| URL | `transcoder:8787` (mismo network) o `127.0.0.1:8787` (host) |
+| URL | `transcoder:8787` |
+
+`transcoder` resuelve porque el contenedor está en la misma red docker
+(`supabase_default`) que `cloudflared`. El DNS de `media.platosmart.com` lo crea
+Cloudflare solo al guardar el public hostname.
+
+> Si algún día pasas `cloudflared` a `config.yml`, el `ingress` equivalente es
+> `- hostname: media.platosmart.com` / `service: http://transcoder:8787` antes de
+> la regla `http_status:404`.
 
 ### 3.6 Prueba manual
 
@@ -375,6 +365,7 @@ El worker procesa **1 job a la vez**. Siempre limpia `WORK_DIR/<jobId>/`.
 | Síntoma | Causa probable / fix |
 |---|---|
 | `worker.start` pero nunca `listen.ready` | `DATABASE_URL` no alcanzable. En Mac: ¿el túnel SSH está arriba? En server: ¿el servicio está en la red de Supabase? (`SUPABASE_NETWORK`). |
+| `listen.connect_failed … password authentication failed` | El rol `postgres` no acepta conexión TCP. Probá `supabase_admin` (misma `POSTGRES_PASSWORD`) en `DATABASE_URL`, o el pooler: `postgres://postgres.<POOLER_TENANT_ID>:<PASS>@supabase-pooler:5432/postgres` (sesión, no transacción — el pooler transaccional rompe LISTEN). |
 | `network <nombre> not found` al `up` | Corré `docker network ls | grep supabase` y ajustá `SUPABASE_NETWORK` en `.env`. |
 | Jobs quedan en `pending`, worker no los toma | El worker no está corriendo, o `claim.failed` en logs → revisá permisos de la conexión (`postgres` debe poder `UPDATE transcode_jobs`). |
 | `job.fail … ffmpeg exit … zscale` / `tonemap` | El worker ya reintenta con el filtro básico. Si igual falla, corré `ffmpeg -filters | grep -E 'zscale|tonemap'` dentro del contenedor. El ffmpeg de Debian los trae. |
