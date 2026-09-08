@@ -21,6 +21,15 @@ function num(name: string, def: number): number {
   return n;
 }
 
+/** Primera de varias env vars que esté puesta, o el default. Para renombres. */
+function numAny(names: string[], def: number): number {
+  for (const name of names) {
+    const v = process.env[name];
+    if (v != null && v.trim() !== '') return num(name, def);
+  }
+  return def;
+}
+
 function bool(name: string, def: boolean): boolean {
   const v = process.env[name];
   if (v == null || v.trim() === '') return def;
@@ -49,11 +58,13 @@ export const config = {
   signedUrlTtl: num('SIGNED_URL_TTL', 21600),
   segmentProxy: bool('SEGMENT_PROXY', false),
 
-  targetHeight: num('TARGET_HEIGHT', 720),
-  videoBitrate: opt('VIDEO_BITRATE', '2M'),
-  audioBitrate: opt('AUDIO_BITRATE', '96k'),
-  x264Preset: opt('X264_PRESET', 'veryfast'),
-  x264Crf: num('X264_CRF', 23),
+  // Tope del lado CORTO del video (vertical -> ancho; horizontal -> alto).
+  // `TARGET_HEIGHT` se mantiene como alias por compatibilidad con .env viejos.
+  targetShortEdge: numAny(['TARGET_SHORT_EDGE', 'TARGET_HEIGHT'], 1080),
+  videoBitrate: opt('VIDEO_BITRATE', '6M'),
+  audioBitrate: opt('AUDIO_BITRATE', '128k'),
+  x264Preset: opt('X264_PRESET', 'faster'),
+  x264Crf: num('X264_CRF', 21),
   hlsSegmentSeconds: num('HLS_SEGMENT_SECONDS', 4),
 
   maxAttempts: num('MAX_ATTEMPTS', 3),

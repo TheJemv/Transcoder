@@ -5,7 +5,7 @@ y los sirve por una API chiquita autenticada, para hacer streaming real en vez d
 progressive download. Todo corre en tu infra. **Cero terceros.**
 
 - **Worker** — escucha `LISTEN transcode_job` (+ poll de respaldo), baja el MP4
-  original del bucket privado `media`, corre `ffmpeg` → HLS 720p, sube a
+  original del bucket privado `media`, corre `ffmpeg` → HLS 1080p (H.264 high), sube a
   `media-hls`, y marca `posts.playback_status = 'ready'`.
 - **Media API** (Fastify) — `GET /media/:userId/:postId/index.m3u8`: verifica el
   access token de Supabase (local, sin red), chequea permiso con un query
@@ -336,11 +336,11 @@ En local: reemplazá el host por `http://127.0.0.1:8787`.
 | `MEDIA_API_PORT` | `8787` | Puerto de la Media API. |
 | `SIGNED_URL_TTL` | `21600` | TTL (s) de los signed URLs de segmentos. 6h. |
 | `SEGMENT_PROXY` | `false` | `true` → la API hace stream de los `.ts` (solo valida firma+exp). |
-| `TARGET_HEIGHT` | `720` | Alto máximo de la rendición (no hace upscale). |
-| `VIDEO_BITRATE` | `2M` | `-maxrate` (bufsize = 2×). |
-| `AUDIO_BITRATE` | `96k` | AAC. |
-| `X264_PRESET` | `veryfast` | preset de libx264. |
-| `X264_CRF` | `23` | CRF. |
+| `TARGET_SHORT_EDGE` | `1080` | Tope del lado **corto** (vertical → ancho, horizontal → alto). No hace upscale. `TARGET_HEIGHT` sigue como alias. |
+| `VIDEO_BITRATE` | `6M` | `-maxrate` (bufsize = 2×). Es CRF con tope. |
+| `AUDIO_BITRATE` | `128k` | AAC. |
+| `X264_PRESET` | `faster` | preset de libx264. |
+| `X264_CRF` | `21` | CRF (menor = mejor calidad + más peso). |
 | `HLS_SEGMENT_SECONDS` | `4` | `-hls_time` y alineación de keyframes. |
 | `MAX_ATTEMPTS` | `3` | Reintentos antes de `playback_status='error'`. |
 | `POLL_MS` | `15000` | Poll de respaldo del worker. |

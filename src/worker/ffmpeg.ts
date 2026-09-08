@@ -62,9 +62,13 @@ export async function probe(file: string): Promise<ProbeResult> {
 }
 
 function buildVideoFilter(mode: FilterMode): string {
-  const h = config.targetHeight;
-  // No hacer upscale: si el video ya viene <= target, se queda igual.
-  const scale = `scale=-2:'min(${h},ih)'`;
+  const s = config.targetShortEdge;
+  // Limita el lado CORTO a `s` (para vertical eso es el ancho; para horizontal,
+  // el alto), preservando el aspecto, sin upscale y con dimensiones pares.
+  // Antes se limitaba SOLO el alto -> un video vertical 1080x1920 terminaba en
+  // 608x1080 (medía la mitad de resolución). Ahora queda 1080x1920 completo.
+  const k = `min(1,${s}/min(iw,ih))`; // factor <= 1: nunca agranda
+  const scale = `scale=w='trunc(iw*${k}/2)*2':h='trunc(ih*${k}/2)*2'`;
   if (mode === 'tonemap') {
     return [
       'zscale=t=linear:npl=100',
@@ -96,7 +100,10 @@ export function buildFfmpegArgs(input: string, outDir: string, mode: FilterMode)
     '-pix_fmt', 'yuv420p',
     '-c:v', 'libx264',
     '-preset', config.x264Preset,
-    '-profile:v', 'main',
+    // `high` es el perfil correcto para 1080p (8x8 transform -> ~5% más
+    // eficiente que `main`). Todos los reproductores de los últimos 15 años
+    // lo soportan; iOS/Android nativo sin problema.
+    '-profile:v', 'high',
     '-crf', String(config.x264Crf),
     '-maxrate', config.videoBitrate,
     '-bufsize', doubleRate(config.videoBitrate),
