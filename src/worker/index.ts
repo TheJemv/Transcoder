@@ -119,6 +119,23 @@ async function drain(): Promise<void> {
   }
 }
 
+// Un solo reintento pendiente a la vez. Cuando connect() falla, pg rechaza la
+// promesa Y emite 'end': si los dos programan un reintento, cada fallo duplica
+// los intentos (con la DB caída llegó a ~12k conexiones y la tumbó).
+let reconnectTimer: NodeJS.Timeout | null = null;
+let reconnectDelayMs = 0;
+const RECONNECT_MIN_MS = 2_000;
+const RECONNECT_MAX_MS = 30_000;
+
+function scheduleReconnect(): void {
+  if (stopping || reconnectTimer) return;
+  reconnectDelayMs = Math.min(RECONNECT_MAX_MS, Math.max(RECONNECT_MIN_MS, reconnectDelayMs * 2));
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    void startListener();
+  }, reconnectDelayMs);
+}
+
 async function startListener(): Promise<void> {
   if (stopping) return;
 
@@ -131,22 +148,27 @@ async function startListener(): Promise<void> {
     void drain();
   });
   client.on('end', () => {
+    // Solo el cliente vigente reconecta; uno viejo que termina tarde no hace nada
+    if (listenClient !== client) return;
     listenClient = null;
     if (!stopping) {
-      log.warn('listen.ended_reconnecting', {});
-      setTimeout(() => void startListener(), 2000);
+      log.warn('listen.ended_reconnecting', { inMs: Math.max(RECONNECT_MIN_MS, reconnectDelayMs * 2) });
+      scheduleReconnect();
     }
   });
 
   try {
     await client.connect();
     await client.query('LISTEN transcode_job');
+    reconnectDelayMs = 0;
     log.info('listen.ready', {});
     void drain(); // barrer lo que quedó pendiente
   } catch (e) {
-    listenClient = null;
+    if (listenClient === client) listenClient = null;
     log.error('listen.connect_failed', { err: String(e) });
-    if (!stopping) setTimeout(() => void startListener(), 3000);
+    // Cerrar el socket si quedó abierto (p. ej. si falló el LISTEN tras conectar)
+    client.end().catch(() => undefined);
+    scheduleReconnect();
   }
 }
 
@@ -166,6 +188,7 @@ async function main(): Promise<void> {
     log.info('worker.shutdown', { sig });
     stopping = true;
     clearInterval(timer);
+    if (reconnectTimer) clearTimeout(reconnectTimer);
     const deadline = Date.now() + 60_000;
     while (draining && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 500));
